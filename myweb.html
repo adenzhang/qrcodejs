@@ -1,0 +1,306 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko" lang="ko">
+<head>
+<title>Cross-Browser QRCode generator for Javascript</title>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<script type="text/javascript" src="jquery.min.js"></script>
+<script type="text/javascript" src="qrcode.js"></script>
+</head>
+
+<style>
+    #progress_bar {
+      margin: 10px 0;
+      padding: 3px;
+      border: 1px solid #000;
+      font-size: 14px;
+      clear: both;
+      opacity: 0;
+      -moz-transition: opacity 1s linear;
+      -o-transition: opacity 1s linear;
+      -webkit-transition: opacity 1s linear;
+    }
+    #progress_bar.loading {
+      opacity: 1.0;
+    }
+    #progress_bar .percent {
+      background-color: #99ccff;
+      height: auto;
+      width: 0;
+    }
+</style>
+  
+  <input type="file" id="files" name="file" />
+  <button onclick="abortRead();">Cancel read</button>
+  <p id='status'></p>
+  <div id="qrcode" style="width:500px; height:500px; margin-top:15px;"></div>
+  <div id="byte_content"></div>
+  <div id="progress_bar"><div class="percent">0%</div></div>
+  <br />
+
+  <script>
+  //      string to base 64
+  // method 1, string to b64 : btoa(unescape(encodeURIComponent(s))
+  // method 2, string to bytes then to b64
+  //var bytes = new TextEncoder("utf-8").encode(s);
+  //var b64 = btoa(String.fromCharCode.apply(null, new Uint8Array(bytes)));
+
+      function byteArray2Base64(bytearray) {
+        return btoa(String.fromCharCode.apply(null, bytearray));  // to b64
+      }
+      function string2Base64( s ) {
+        return btoa(unescape(encodeURIComponent(s)));
+      }
+      function string2ByteArray( s ) {
+        return new TextEncoder("utf-8").encode(s);
+      }
+
+      function get_b64_size( size ) {
+        var r = size % 3;
+        if( r != 0 ) size += (3-r);
+        return size / 3 * 4;  // return b64size
+      }
+    function calc_b64blocksize(datasize, blockcap, headersufix_size) {
+        /* give raw data size, b64 encode it and split it into blocks. Adding header to each block, so that the block size <= blockcap.
+            header format 'blockindex|crc32cfilehecksum_of_file|', 
+                where blockindex and checksum have fixed number of digits like '002|2A35AC23|'
+            headersufix_size: size of '|2A35AC23|'
+            first block is in format '0|crc32cfilehecksum_of_file|nb:nblocks,bs:blocksize,fs:filesize,b64:[ALL|BLOCK|NONE],fn:filename',
+                where nblocks doesn't include the first block.
+                b64: ALL, encode whole data; BLOCK: encode per block; NONE, no b64 encode, no implemented right now.
+                    Here b64=BLOCK is default.
+            return (nblocks, headersize, blocksize)
+        */
+        let count_digits = function( x ) { return (x).toString(10).length;}
+        let header_size = function( nblock ) { return count_digits(nblocks) + headersufix_size; }
+        let calc_blocksize = function( nblocks ) {
+            // return blocksize or -1
+            let blksize = Math.ceil( datasize / nblocks );
+            if ( get_b64_size(blksize) + header_size(nblocks + 1) <= blockcap )  // plus the first meta block
+                return blksize;
+            return -1;
+        };
+
+        let nblocks = Math.ceil( datasize/blockcap );
+        let blocksize = -1;
+        while( true ) {
+            blocksize = calc_blocksize(nblocks);
+            if( blocksize >= 0 )
+                break;
+            nblocks += 1;
+        }
+        return [nblocks, header_size(nblocks), blocksize]; // return [nblock, headersize, datablocksize]
+    }
+
+    var userInputDigits = null;
+
+      var qrcode = new QRCode(document.getElementById("qrcode"), {
+	            width : 850,
+              height : 850,
+              correctLevel: QRCode.CorrectLevel.L,
+           });
+        var qrinfo = {
+            version  : 40,
+            correctionLevel : 0,
+            blockcap : null, //  to be set
+            nblocks : null,  // to be set
+            headersize: null, 
+            datablocksize: null,
+            file : null, // file type
+            filename_b64 : null,
+            data:  null,       // raw byte array or Uint8Array
+            iblock: 0,         // next block to set
+            playrateFPS: 10,    //
+            userpaused : true,
+            checksum: 1243, // string, id of the file
+        };
+        var statusElm = document.getElementById('status');;
+
+      ////////////// QRCode Generator ////////////////
+      function showStatus() {
+        statusElm.textContent = "file:" + qrinfo.file.name + ", iblock:" + qrinfo.iblock + ", nblocks:" + qrinfo.nblocks + ", datasize:" 
+        + qrinfo.data.length + ", datablocksize:" + qrinfo.datablocksize + ", playFPS:" + qrinfo.playrateFPS;
+      }
+      function get_header() {
+          return "" + qrinfo.iblock + "|" + qrinfo.checksum;
+      }
+      function get_datablock() {
+          // return datablock in b64 mode
+          let i = qrinfo.iblock;
+          if( i == 0) {
+              return "nb=" + qrinfo.nblocks + "|bs=" + qrinfo.datablocksize + "|fs=" + qrinfo.data.length + "|fn=" + qrinfo.filename_b64;
+          }else{
+            let data = qrinfo.data.slice( (i-1)* qrinfo.datablocksize, i* qrinfo.datablocksize );
+            return byteArray2Base64( data );  // to b64
+          }
+      }
+      function get_block() {
+          return get_header() + "|" + get_datablock();
+      }
+      function showQR() {
+        if( qrinfo.iblock >= qrinfo.nblocks )
+            return;
+        showStatus();
+        let data = get_block();
+        qrcode.makeCode( data ); 
+        if( qrinfo.userpaused )
+            return;
+        if( ++qrinfo.iblock >= qrinfo.nblocks ) {
+            qrinfo.iblock = qrinfo.nblocks -1;
+            qrinfo.userpaused = true;
+        }else
+            setTimeout(showQR, 1000/qrinfo.playrateFPS);
+      }
+      
+      function generateQR(file, data) {
+        if( data.length == 0 ) {
+          alert("Empty file:" + file.name );
+          return;
+        }
+        let bytearray = new Uint8Array(data);
+        qrinfo.file = file; // todo: check it.
+        qrinfo.filename_b64 = string2Base64( file.name );
+        qrinfo.data = bytearray; 
+        qrinfo.checksum = (Math.floor(Math.random() * 100000000 )).toString(16);
+
+        let limits = QRCode.LimitLengths;
+        qrinfo.blockcap = limits[qrinfo.version-1][qrinfo.correctionLevel];
+        let res = calc_b64blocksize(bytearray.length, qrinfo.blockcap, qrinfo.checksum.length + 2 );
+        qrinfo.nblocks =  res[0] + 1 ; // plus the first meta data block
+        qrinfo.headersize = res[1];
+        qrinfo.datablocksize = res[2];
+        qrinfo.iblock = 0;
+        showQR();
+      }
+    function keypressed(evt) {
+      if( evt.charCode >= 48 && evt.charCode <= 57) { // digits
+        userInputDigits = userInputDigits *10 + evt.charCode - 48;
+        return;
+      }else if( evt.charCode == 13 ){  // enter
+        if( userInputDigits != null ) {
+          if( userInputDigits >= qrinfo.nblocks )
+            qrinfo.iblock = qrinfo.nblocks -1 ;
+          else
+            qrinfo.iblock = userInputDigits;
+          showQR();
+        }
+        userInputDigits = null;
+        return;
+      }
+      userInputDigits = null;
+      
+        switch( evt.key ) {
+            case ' ': 
+                if( qrinfo.userpaused ) { // resume
+                    qrinfo.userpaused = false;
+                }else{
+                    qrinfo.userpaused = true;
+                    return;
+                }
+                break;
+            case 'i':  // speed up
+                qrinfo.playrateFPS = Math.floor(qrinfo.playrateFPS) >= 1 ? Math.floor(qrinfo.playrateFPS+1) : qrinfo.playrateFPS *1.1;
+                break;
+            case 'k':  // slow down up
+                qrinfo.playrateFPS = Math.floor(qrinfo.playrateFPS) >= 1 ? Math.floor(qrinfo.playrateFPS-1) : qrinfo.playrateFPS *0.8;
+                break;
+            case 'j':  // move backward
+                if( --qrinfo.iblock < 0 )
+                    qrinfo.iblock = 0 ;
+                break;
+            case 'l':  // move forward
+                if( ++qrinfo.iblock >= qrinfo.nblocks )
+                    qrinfo.iblock = qrinfo.nblocks -1 ;
+                break;
+            case 'h':  // move to first
+                qrinfo.iblock = 0 ;
+                break;
+            case 'e':  // move forward
+                qrinfo.iblock = qrinfo.nblocks -1 ;
+                break;
+            case 'w': // inc version
+                if( ++qrinfo.version > 40 ) qrinfo.version = 40;
+                generateQR( qrinfo.file, qrinfo.data );
+                break;
+            case 's': // dec version
+                if( --qrinfo.version < 4 ) qrinfo.version = 4;
+                generateQR( qrinfo.file, qrinfo.data );
+                break;
+            default:
+                return;
+        }
+        showQR();
+    }
+      ////////////// File Reader ////////////////
+    var reader;
+    var progress = document.querySelector('.percent');
+  
+    function abortRead() {
+      reader.abort();
+    }
+  
+    function errorHandler(evt) {
+      switch(evt.target.error.code) {
+        case evt.target.error.NOT_FOUND_ERR:
+          alert('File Not Found!');
+          break;
+        case evt.target.error.NOT_READABLE_ERR:
+          alert('File is not readable');
+          break;
+        case evt.target.error.ABORT_ERR:
+          break; // noop
+        default:
+          alert('An error occurred reading this file.');
+      };
+    }
+
+  
+    function updateProgress(evt) {
+      // evt is an ProgressEvent.
+      if (evt.lengthComputable) {
+        var percentLoaded = Math.round((evt.loaded / evt.total) * 100);
+        // Increase the progress bar length.
+        if (percentLoaded < 100) {
+          progress.style.width = percentLoaded + '%';
+          progress.textContent = percentLoaded + '%';
+        }
+      }
+    }
+  
+    function handleFileSelect(evt) {
+      // Reset progress indicator on new file selection.
+      file = evt.target.files[0];  
+      progress.style.width = '0%';
+      progress.textContent = '0%';
+  
+      reader = new FileReader();
+      reader.onerror = errorHandler;
+      reader.onprogress = updateProgress;
+      reader.onabort = function(e) {
+        alert('File read cancelled');
+      };
+      reader.onloadstart = function(e) {
+        document.getElementById('progress_bar').className = 'loading';
+      };
+      reader.onload = function(e) {
+        // Ensure that the progress bar displays 100% at the end.
+        progress.style.width = '100%';
+        progress.textContent = '100%';
+        setTimeout("document.getElementById('progress_bar').className='';", 2000);
+      }
+      reader.onloadend = function(evt) {
+          if (evt.target.readyState == FileReader.DONE) { // DONE == 2
+            //    document.getElementById('byte_content').textContent = evt.target.result;
+               generateQR( file, evt.target.result );
+          }
+      }
+  
+      // Read in the image file as a binary string.
+    //   reader.readAsBinaryString(file);
+      reader.readAsArrayBuffer(file);
+    }
+  
+    document.getElementById('files').addEventListener('change', handleFileSelect, false);
+    // document.onkeypress = keypressed;
+    document.addEventListener('keypress', keypressed);
+  </script>

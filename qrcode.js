@@ -9,7 +9,7 @@
  * @see <a href="http://jeromeetienne.github.com/jquery-qrcode/" target="_blank">http://jeromeetienne.github.com/jquery-qrcode/</a>
  */
 var QRCode;
-
+var QRCodeConsts = {};
 (function () {
 	//---------------------------------------------------------------------
 	// QRCode for JavaScript
@@ -503,6 +503,7 @@ var QRCode;
 	}
 
 	function _getUTF8Length(sText) {
+		return sText.length; // @jz assume sTtest is already base64 string.
 		var replacedText = encodeURI(sText).toString().replace(/\%[0-9a-fA-F]{2}/g, 'a');
 		return replacedText.length + (replacedText.length != sText ? 3 : 0);
 	}
@@ -611,4 +612,5 @@ var QRCode;
 	 * @name QRCode.CorrectLevel
 	 */
 	QRCode.CorrectLevel = QRErrorCorrectLevel;
+	QRCode.LimitLengths = QRCodeLimitLength;
 })();
